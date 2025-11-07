@@ -1,0 +1,244 @@
+Love it. Here’s a clean, modern stack that will make WindSite_AI look **insanely good** while staying practical for your constraints + modelling.
+
+# 🔧 Architecture (at a glance)
+
+* **Backend**: Django + GeoDjango + DRF on **PostGIS**
+* **Scoring/Modelling**: Python (raster & vector ops), async jobs
+* **Frontend**: Next.js (React) + **Mapbox GL**/**deck.gl** + Tailwind (sleek UI)
+* **Reporting**: HTML→PDF
+* **Containers**: Docker Compose (db, web, worker, redis)
+
+---
+
+# 🗄️ Backend (Django + GeoDjango)
+
+**Core**
+
+* `Django` (API + admin)
+* `djangorestframework` (REST)
+* `django.contrib.gis` (GeoDjango)
+* `psycopg[binary]` (Postgres driver)
+* `django-environ` (env vars)
+* `django-cors-headers` (frontend ↔ backend)
+
+**Geospatial / Modelling**
+
+* `shapely` (geometry ops in Python)
+* `pyproj` (projections)
+* `rasterio` + `rioxarray` (read GeoTIFF wind @100m, zonal stats)
+* `geopandas` (developer convenience when prototyping)
+* `rest_framework_gis` (GeoJSON serializers)
+* `numpy`, `pandas` (calcs)
+* (optional later) `xgboost` / `scikit-learn` (AI ranking)
+
+**Async & storage**
+
+* `celery` + `redis` (long-running “scenario modelling” jobs)
+* `boto3` (if you want S3/MinIO for raster storage)
+
+**Reporting**
+
+* `weasyprint` (best looking HTML→PDF)
+
+  * or `wkhtmltopdf` / `xhtml2pdf` as alternates
+
+**Why this rocks**
+
+* PostGIS gives you fast **buffers/setbacks**, **intersections**, **nearest infrastructure**, **grid-based spacing**, and **spatial indexes**.
+* Raster stack (rasterio/rioxarray) lets you sample **wind speed GeoTIFF** and compute **yield**.
+
+**PostGIS you’ll actually use**
+
+* `ST_Buffer`, `ST_Difference`, `ST_Intersection`, `ST_DWithin`, `ST_Within`, `ST_Area`
+* `ST_Collect`, `ST_ClusterDBSCAN` (optional for grouping)
+* **Spatial index**: `CREATE INDEX … USING GIST(geom);`
+
+---
+
+# 🧮 Site Scoring & Scenario Engine
+
+**Energy formula** (given):
+
+```
+Energy_kWh = 0.6 * 0.5 * ρ * (π * 0.25 * D^2) * v^3 * 8760 * n_turbines / 1_000_000
+# ρ = 1.2 kg/m^3, v = wind speed @100m (m/s), D = rotor diameter (m)
+```
+
+**Spacing**: turbines ≥ **5×D** apart → fit a grid (hex or square) clipped to developable area; count placements.
+
+**Costs**:
+
+* D=160m → £2.5m
+* D=130m → £1.6m
+* D=100m → £1.0m
+
+**Setbacks** (buffers):
+
+* Residential: **1 km**
+* Water bodies: **50 m**
+* Highways/Rail: **tip height + 10%** (so depends on turbine selection)
+* Gas pipeline: **1.5 × hub height**
+* Others listed (0 m): treat as **no-build masks** (intersect → exclude)
+* “Other renewables within 5 km: 0 m” (allow but mark proximity in score)
+
+**Implementation sketch**
+
+* Pre-load constraint layers (shp/GeoJSON) into PostGIS.
+* For a chosen turbine (D, hub height, tip height): build a dynamic *exclusion geometry*:
+
+  ```
+  exclusion = residential_buffer(1000)
+             ∪ water_buffer(50)
+             ∪ highway_buffer(tip*1.1)
+             ∪ rail_buffer(tip*1.1)
+             ∪ pipeline_buffer(1.5*hub)
+             ∪ all_zero_setback_masks
+  developable = study_area ▵ exclusion  (ST_Difference)
+  ```
+* Raster sample mean wind over `developable` polygons: `rioxarray` zonal stats or vectorised sampling.
+* Place turbines on a 5D grid inside `developable`, count valid placements.
+* Compute energy + cost + £/MWh; expose as **Scenario** result.
+
+---
+
+# 💅 Frontend (beautiful + interactive)
+
+**Framework**
+
+* **Next.js 15 (React)** — SEO, routing, server components
+* **TypeScript**, **TailwindCSS**, **shadcn/ui** (clean, pro UI)
+* **Zustand** (simple state); **TanStack Query** (API cache)
+
+**Maps & 3D**
+
+* **Mapbox GL JS** (fast, 3D terrain, gorgeous basemaps)
+* **deck.gl** overlays:
+
+  * `GeoJsonLayer` (constraints, candidates)
+  * `HexagonLayer / ScreenGridLayer` (heatmaps)
+  * `PathLayer` (grid, roads, pipelines)
+  * `TripsLayer` (optional animation)
+  * *(cool option)* **Flow map** for wind vectors if you have direction data
+* **mapbox-gl-draw** (user draws AOIs, edits polygons)
+* **turf.js** (client-side buffers/measurements for quick UX)
+
+**Charts**
+
+* **ECharts** or **Plotly** (turbine count, yield, cost, LCOE)
+* **react-pdf** preview or just link to backend PDF
+
+**Why this looks incredible**
+
+* 3D terrain + subtle deck.gl effects (e.g., elevation extrusion, heatmap glows)
+* Smooth interactions, sliders for rotor diameter/hub height → instant re-score
+* Layer toggles (residential, highways, woodland, pipelines) with legends
+
+---
+
+# 🧰 Dev & DX
+
+* **Docker Compose**: `db` (postgis), `web` (django), `worker` (celery), `redis`, `frontend`
+* **pre-commit** (black, isort, flake8)
+* **pytest** + `pytest-django`
+* **Makefile** with common tasks (`make up`, `make migrate`, `make demo-data`)
+* **.env / .env.example** for both apps
+
+---
+
+# 📦 Dependency lists to copy-paste
+
+### Backend `requirements.txt`
+
+```
+Django==5.2.*
+djangorestframework==3.16.*
+django-cors-headers==4.*
+psycopg[binary]==3.2.*
+python-dotenv==1.2.*
+# Geo
+shapely==2.*
+pyproj==3.*
+rasterio==1.*
+rioxarray==0.*
+geopandas==1.*
+djangorestframework-gis==1.0.*
+numpy
+pandas
+# Async & reports
+celery==5.*
+redis==5.*
+weasyprint==61.*      # or pin wkhtmltopdf + pdfkit if you prefer
+```
+
+### Frontend (Next.js) `package.json` (key bits)
+
+```json
+{
+  "dependencies": {
+    "next": "15.x",
+    "react": "18.x",
+    "react-dom": "18.x",
+    "typescript": "^5",
+    "tailwindcss": "^3",
+    "clsx": "^2",
+    "lucide-react": "^0.4",
+    "@tanstack/react-query": "^5",
+    "zustand": "^4",
+    "mapbox-gl": "^3",
+    "deck.gl": "^9",
+    "@mapbox/mapbox-gl-draw": "^1",
+    "@turf/turf": "^7",
+    "echarts": "^5",
+    "react-pdf": "^7",
+    "sonner": "^1",               // toast notifications
+    "axios": "^1"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10",
+    "postcss": "^8"
+  }
+}
+```
+
+---
+
+# 🚀 “Looks incredible” features to implement first
+
+1. **Map landing screen**
+
+   * 3D terrain basemap, logo, “Draw Area” CTA (Mapbox-GL-Draw)
+   * Layer toggles: Wind, Residential, Roads, Water, Pipelines, Constraints
+2. **Scenario panel (right drawer)**
+
+   * Sliders: **Rotor D** (100/130/160 m), **Hub height**, **Tip height**
+   * Buttons: “Compute Turbines”, “Estimate Yield”, “Export PDF”
+3. **Visual turbine packing**
+
+   * Show grid of potential turbine positions (faded grey), final placements in **green**
+4. **Heatmap**
+
+   * deck.gl HexagonLayer of **suitability score**
+5. **One-click PDF**
+
+   * Summary: map snapshot, assumptions, counts, yield, cost, LCOE
+
+---
+
+# 🧭 Data ingestion plan
+
+* Load shapefiles/GeoJSON to PostGIS: `ogr2ogr -f PostgreSQL …`
+* Load GeoTIFF to disk/S3; register in DB with path + CRS
+* Index everything (GIST on geometry)
+* Write a `manage.py` command: `ingest_constraints` + `ingest_wind_raster`
+
+---
+
+# 🧪 MVP endpoints
+
+* `POST /api/scenarios/` → `{aoi, D, hub, tip}` → returns `{developable_area, n_turbines, energy, cost, lcoe, geojson}`
+* `GET /api/layers/:name` → GeoJSON for toggles
+* `POST /api/report/:scenario_id` → returns PDF
+
+---
+
+If you want, I’ll spin you a **starter branch** layout (folders, settings, Docker compose, example viewset/serializer, a Next.js page that renders a Mapbox map with deck.gl + a right-hand scenario panel). That gives you a sexy demo in hours, and you can iterate the modelling behind it.
